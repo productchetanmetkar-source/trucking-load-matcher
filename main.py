@@ -38,8 +38,11 @@ class TruckingMatchingOrchestrator:
         
         # Step 2: Extract entities from transcript
         logger.info("Extracting entities from transcript...")
-        extracted_entities = self.entity_extraction_agent.extract_entities(transcript)
-        
+        # Try enhanced extraction with knowledge base first, fallback to regular
+        if hasattr(self.entity_extraction_agent, 'extract_entities_with_knowledge'):
+            extracted_entities = self.entity_extraction_agent.extract_entities_with_knowledge(transcript)
+        else:
+            extracted_entities = self.entity_extraction_agent.extract_entities(transcript)        
         # Step 3: Find matching loads
         logger.info("Finding matching loads...")
         matching_results = self.load_matching_agent.find_matching_loads(

@@ -286,25 +286,43 @@ class EntityExtractionAgent:
         
         # Apply knowledge base normalization using correct field names
         
-        # 1. Normalize truck_type using aliases
-        if entities.truck_type:
-            original_type = str(entities.truck_type).lower()
+        # 1. Normalize truck_type using aliases - IMPROVED VERSION
+        if full_text:  # Check the full text regardless of current extraction
+        # Check if any container aliases appear in text
+        for standard_type, data in knowledge_context['truck_classifications'].items():
+            aliases = data.get('aliases', [])
             
-            # Check if current type can be normalized better using knowledge base
-            for standard_type, data in knowledge_context['truck_classifications'].items():
-                aliases = data.get('aliases', [])
-                
-                # Check if any alias matches text or if we can improve classification
-                for alias in aliases:
-                    if alias.lower() in full_text.lower():
-                        # Map to TruckType enum
-                        if standard_type == 'container':
-                            entities.truck_type = TruckType.CONTAINER
-                        elif standard_type == 'open':
-                            entities.truck_type = TruckType.OPEN
-                        elif standard_type == 'trailer':
-                            entities.truck_type = TruckType.MULTI_AXLE
+            # Check if any alias matches text
+            for alias in aliases:
+                if alias.lower() in full_text.lower():
+                    # Override the truck type if we find a match
+                    if standard_type == 'container':
+                        entities.truck_type = TruckType.CONTAINER
                         break
+                    elif standard_type == 'trailer':
+                        entities.truck_type = TruckType.MULTI_AXLE
+                        break
+        
+        # Break out of outer loop if we found a match
+        if standard_type == 'container' and entities.truck_type == TruckType.CONTAINER:
+            break
+        elif standard_type == 'trailer' and entities.truck_type == TruckType.MULTI_AXLE:
+            break
+        # Check if current type can be normalized better using knowledge base
+        for standard_type, data in knowledge_context['truck_classifications'].items():
+            aliases = data.get('aliases', [])
+            
+            # Check if any alias matches text or if we can improve classification
+            for alias in aliases:
+                if alias.lower() in full_text.lower():
+                    # Map to TruckType enum
+                    if standard_type == 'container':
+                        entities.truck_type = TruckType.CONTAINER
+                    elif standard_type == 'open':
+                        entities.truck_type = TruckType.OPEN
+                    elif standard_type == 'trailer':
+                        entities.truck_type = TruckType.MULTI_AXLE
+                    break
         
         # 2. Normalize current_location
         if entities.current_location:
@@ -330,5 +348,26 @@ class EntityExtractionAgent:
             if enhanced_scores:
                 entities.confidence_scores['overall'] = sum(enhanced_scores) / len(enhanced_scores)
         
+        return entities  # This was missing!
+    def _combine_transcript_text(self, transcript):
+        """Combine all conversation turns into single text"""
+        combined_text = []
+        
+        # Handle different transcript formats
+        if hasattr(transcript, 'turns') and transcript.turns:
+            # Pydantic model format
+            for turn in transcript.turns:
+                combined_text.append(f"{turn.speaker}: {turn.text}")
+        elif hasattr(transcript, 'conversation') and transcript.conversation:
+            # Dictionary format
+            for turn in transcript.conversation:
+                speaker = turn.get('speaker', 'Unknown')
+                text = turn.get('text', '')
+                combined_text.append(f"{speaker}: {text}")
+        else:
+            # Fallback - try to extract text however possible
+            combined_text.append(str(transcript))
+        
+        return "\n".join(combined_text)
         return entities     
         return scores
