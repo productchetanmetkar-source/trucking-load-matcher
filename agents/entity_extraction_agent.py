@@ -288,42 +288,27 @@ class EntityExtractionAgent:
         
         # 1. Normalize truck_type using aliases - IMPROVED VERSION
         if full_text:  # Check the full text regardless of current extraction
-        # Check if any container aliases appear in text
-        for standard_type, data in knowledge_context['truck_classifications'].items():
-            aliases = data.get('aliases', [])
-            
-            # Check if any alias matches text
-            for alias in aliases:
-                if alias.lower() in full_text.lower():
-                    # Override the truck type if we find a match
-                    if standard_type == 'container':
-                        entities.truck_type = TruckType.CONTAINER
-                        break
-                    elif standard_type == 'trailer':
-                        entities.truck_type = TruckType.MULTI_AXLE
-                        break
-        
-        # Break out of outer loop if we found a match
-        if standard_type == 'container' and entities.truck_type == TruckType.CONTAINER:
-            break
-        elif standard_type == 'trailer' and entities.truck_type == TruckType.MULTI_AXLE:
-            break
-        # Check if current type can be normalized better using knowledge base
-        for standard_type, data in knowledge_context['truck_classifications'].items():
-            aliases = data.get('aliases', [])
-            
-            # Check if any alias matches text or if we can improve classification
-            for alias in aliases:
-                if alias.lower() in full_text.lower():
-                    # Map to TruckType enum
-                    if standard_type == 'container':
-                        entities.truck_type = TruckType.CONTAINER
-                    elif standard_type == 'open':
-                        entities.truck_type = TruckType.OPEN
-                    elif standard_type == 'trailer':
-                        entities.truck_type = TruckType.MULTI_AXLE
+            # Check if any container aliases appear in text
+            for standard_type, data in knowledge_context['truck_classifications'].items():
+                aliases = data.get('aliases', [])
+                
+                # Check if any alias matches text
+                for alias in aliases:
+                    if alias.lower() in full_text.lower():
+                        # Override the truck type if we find a match
+                        if standard_type == 'container':
+                            entities.truck_type = TruckType.CONTAINER
+                            break
+                        elif standard_type == 'trailer':
+                            entities.truck_type = TruckType.MULTI_AXLE
+                            break
+                
+                # Break out of outer loop if we found a match
+                if standard_type == 'container' and entities.truck_type == TruckType.CONTAINER:
                     break
-        
+                elif standard_type == 'trailer' and entities.truck_type == TruckType.MULTI_AXLE:
+                    break
+                
         # 2. Normalize current_location
         if entities.current_location:
             entities.current_location = trucking_knowledge.normalize_location(entities.current_location)
@@ -341,14 +326,14 @@ class EntityExtractionAgent:
                 entities.confidence_scores['truck_type_enhanced'] = 0.95
             if entities.current_location:
                 entities.confidence_scores['location_enhanced'] = 0.90
-            
+                    
             # Recalculate overall confidence
             enhanced_scores = [score for key, score in entities.confidence_scores.items() 
                             if not key.endswith('_enhanced')]
             if enhanced_scores:
                 entities.confidence_scores['overall'] = sum(enhanced_scores) / len(enhanced_scores)
-        
-        return entities  # This was missing!
+                
+                return entities  # This was missing!
     def _combine_transcript_text(self, transcript):
         """Combine all conversation turns into single text"""
         combined_text = []
