@@ -1,5 +1,3 @@
-from knowledge.trucking_knowledge import trucking_knowledge
-import json
 import re
 import json
 from typing import Dict, List, Optional, Tuple
@@ -111,7 +109,7 @@ class EntityExtractionAgent:
             availability_constraints=availability.get('constraints', []),
             phone_number=contact_info.get('phone'),
             special_requirements=truck_specs.get('special_requirements', []),
-            confidence_scores=confidence_scores if confidence_scores is not None else {}
+            confidence_scores=confidence_scores
         )
         
         self.logger.info(f"Extracted entities with overall confidence: {confidence_scores.get('overall', 0)}")
@@ -270,65 +268,4 @@ class EntityExtractionAgent:
         critical_scores = [scores.get(entity, 0) for entity in critical_entities]
         scores['overall'] = sum(critical_scores) / len(critical_scores) if critical_scores else 0.0
         
-        return scores
-
-    def extract_entities_with_knowledge(self, transcript):
-        """Enhanced extraction using knowledge base context"""
-        
-        # Combine transcript text for analysis
-        full_text = self._combine_transcript_text(transcript)
-        
-        # Get comprehensive knowledge context
-        knowledge_context = trucking_knowledge.get_knowledge_context()
-        
-        # Get original entities using your existing method
-        entities = self.extract_entities(transcript)
-        
-        # Apply knowledge base normalization using correct field names
-        
-        # 1. Normalize truck_type using aliases
-        if entities.truck_type:
-            original_type = str(entities.truck_type).lower()
-            
-            # Check if current type can be normalized better using knowledge base
-            for standard_type, data in knowledge_context['truck_classifications'].items():
-                aliases = data.get('aliases', [])
-                
-                # Check if any alias matches text or if we can improve classification
-                for alias in aliases:
-                    if alias.lower() in full_text.lower():
-                        # Map to TruckType enum
-                        if standard_type == 'container':
-                            entities.truck_type = TruckType.CONTAINER
-                        elif standard_type == 'open':
-                            entities.truck_type = TruckType.OPEN
-                        elif standard_type == 'trailer':
-                            entities.truck_type = TruckType.MULTI_AXLE
-                        break
-        
-        # 2. Normalize current_location
-        if entities.current_location:
-            entities.current_location = trucking_knowledge.normalize_location(entities.current_location)
-        
-        # 3. Normalize preferred_routes
-        if entities.preferred_routes:
-            normalized_routes = []
-            for route in entities.preferred_routes:
-                normalized_routes.append(trucking_knowledge.normalize_location(route))
-            entities.preferred_routes = normalized_routes
-        
-        # 4. Update confidence scores to reflect knowledge base enhancement
-        if entities.confidence_scores:
-            if entities.truck_type:
-                entities.confidence_scores['truck_type_enhanced'] = 0.95
-            if entities.current_location:
-                entities.confidence_scores['location_enhanced'] = 0.90
-            
-            # Recalculate overall confidence
-            enhanced_scores = [score for key, score in entities.confidence_scores.items() 
-                            if not key.endswith('_enhanced')]
-            if enhanced_scores:
-                entities.confidence_scores['overall'] = sum(enhanced_scores) / len(enhanced_scores)
-        
-        return entities     
         return scores
