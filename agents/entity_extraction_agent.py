@@ -1,7 +1,6 @@
 from knowledge.trucking_knowledge import trucking_knowledge
 import json
 import re
-import json
 from typing import Dict, List, Optional, Tuple
 from fuzzywuzzy import fuzz
 from models.transcript_model import Transcript
@@ -12,8 +11,8 @@ import logging
 
 class EntityExtractionAgent:
     """
-    Agent responsible for extracting trucking-related entities from conversation transcripts.
-    Handles multilingual content and local language nuances.
+    Enhanced Entity Extraction Agent for capturing both deterministic 
+    and conversational entities from trucking conversations
     """
     
     def __init__(self):
@@ -27,332 +26,466 @@ class EntityExtractionAgent:
     
     def _setup_patterns(self):
         """Setup regex patterns for entity extraction"""
+        # Enhanced phone number patterns to catch fragmented numbers
+        self.phone_pattern = re.compile(r'(?:\+91|91)?[6-9]\d{9}')
+        self.fragmented_phone_pattern = re.compile(r'(\d{2,3})\.{2,3}(\d{3,4})\.{2,3}(\d{2,3})\.{2,3}(\d{2,3})\.{2,3}(\d{2,3})')
+        self.number_sequence_pattern = re.compile(r'\b\d{2,4}\b')
+        
+        # Price patterns with more variations
+        self.price_pattern = re.compile(r'(?:₹|rs\.?|rupees?|rate|rent|price|amount)\s*(\d+(?:,\d+)*(?:\.\d+)?)', re.IGNORECASE)
+        self.quoted_price_pattern = re.compile(r'(?:quote|quoted|offer|charge)\s*(?:₹|rs\.?|rupees?)?\s*(\d+(?:,\d+)*)', re.IGNORECASE)
+        
         # Truck specifications patterns
         self.truck_length_pattern = re.compile(r'(\d+)\s*(?:feet?|ft|foot)', re.IGNORECASE)
-        self.tonnage_pattern = re.compile(r'(\d+(?:\.\d+)?)\s*(?:tons?|ton|mt|tonnes?)', re.IGNORECASE)
-        self.phone_pattern = re.compile(r'(?:\+91|91)?[6-9]\d{9}')
-        self.price_pattern = re.compile(r'(?:₹|rs\.?|rupees?|rate|rent)\s*(\d+(?:,\d+)*(?:\.\d+)?)', re.IGNORECASE)
+        self.tonnage_pattern = re.compile(r'(\d+(?:\.\d+)?)\s*(?:tons?|ton|mt|tonnes?|capacity)', re.IGNORECASE)
         
-        # Location patterns (Indian cities/states)
-        self.location_pattern = re.compile(r'\b(?:bangalore|bengaluru|hyderabad|chennai|mumbai|delhi|kolkata|pune|jaipur|ahmedabad)\b', re.IGNORECASE)
+        # Location patterns
+        self.location_pattern = re.compile(r'\b(?:from|to|going|coming|pickup|drop|delivery)\s+([A-Za-z\s]+?)(?:\s|$|[,.])', re.IGNORECASE)
         
-        # PIN code pattern
-        self.pincode_pattern = re.compile(r'\b\d{6}\b')
+        # Conversational intent patterns
+        self.load_pitch_patterns = [
+            r'(?:we have|got|available)\s+(?:a|one)?\s*load',
+            r'load\s+(?:is\s+)?available',
+            r'there\s+(?:is\s+)?(?:a\s+)?load',
+            r'load\s+for\s+you'
+        ]
+        
+        self.no_load_patterns = [
+            r'no\s+load\s+available',
+            r'don\'t\s+have\s+(?:any\s+)?load',
+            r'no\s+load\s+(?:right\s+now|currently)',
+            r'sorry.*no\s+load'
+        ]
+        
+        self.price_discussion_patterns = [
+            r'what\s+(?:is\s+the\s+)?(?:rate|price|amount)',
+            r'how\s+much',
+            r'tell\s+me\s+(?:the\s+)?(?:rate|price)',
+            r'rate\s+(?:is\s+)?what'
+        ]
     
     def _setup_vocabularies(self):
-        """Setup vocabularies for fuzzy matching"""
-        # Truck type vocabularies with variations and misspellings
+        """Enhanced vocabularies with conversation context"""
         self.truck_type_vocab = {
-            'open': ['open', 'open truck', 'open vehicle', 'open body', 'goods vehicle'],
-            'container': ['container', 'closed', 'closed vehicle', 'cantener', 'containr'],
-            'multi_axle': ['multi axle', 'multi-axle', 'mxl', 'multiaxle'],
-            'single_axle': ['single axle', 'single-axle', 'sxl', 'single axel', 'singleaxle']
+            'open': ['open', 'open truck', 'open vehicle', 'open body', 'goods vehicle', 'half body'],
+            'container': ['container', 'closed', 'closed vehicle', 'full body', 'cantener', 'containr', 'box'],
+            'multi_axle': ['multi axle', 'multi-axle', 'mxl', 'multiaxle', 'trailer'],
+            'single_axle': ['single axle', 'single-axle', 'sxl', 'single axel']
         }
         
-        # Product vocabularies
-        self.product_vocab = {
-            'pipes': ['pipe', 'pipes', 'pipeline', 'tubes'],
-            'cotton': ['cotton', 'cotton boxes', 'cotton bales'],
-            'steel': ['steel', 'iron', 'metal'],
-            'cement': ['cement', 'concrete']
-        }
-        
-        # Location vocabularies with common variations
         self.location_vocab = {
             'bangalore': ['bangalore', 'bengaluru', 'blr', 'banglore'],
             'hyderabad': ['hyderabad', 'hyd', 'secunderabad', 'cyberabad'],
-            'chennai': ['chennai', 'madras'],
-            'mumbai': ['mumbai', 'bombay'],
-            'vijayawada': ['vijayawada', 'vijayawada'],
-            'jigani': ['jigani'],
-            'nelmangala': ['nelmangala', 'nelamangala'],
-            'attibele': ['attibele'],
-            'tumkur': ['tumkur', 'tumkuru']
+            'chennai': ['chennai', 'madras', 'channai'],
+            'mumbai': ['mumbai', 'bombay', 'mumbay'],
+            'coimbatore': ['coimbatore', 'kovai', 'coimbtore'],
+            'madurai': ['madurai', 'mathurai'],
+            'tumakuru': ['tumakuru', 'tumkur', 'tumkuru'],
+            'gujarat': ['gujarat', 'gujrat', 'gujarath']
         }
         
-        # Time/availability vocabularies
-        self.time_vocab = {
-            'immediate': ['immediately', 'now', 'today', 'same day'],
-            'tomorrow': ['tomorrow', 'next day'],
-            'monday': ['monday', 'mon'],
-            'sunday': ['sunday', 'sun'],
-            'weekend': ['weekend', 'saturday', 'sunday']
-        }
+        # Speaker identification patterns
+        self.fo_indicators = ['trucker', 'fo', 'field officer', 'driver']
+        self.shipper_indicators = ['shipper', 'client', 'customer', 'booking']
+        self.ti_indicators = ['ti', 'traffic incharge', 'operator', 'agent']
     
     def extract_entities(self, transcript: Transcript) -> ExtractedEntities:
         """
-        Main method to extract entities from transcript
+        Enhanced entity extraction with deterministic and conversational entities
         """
-        # Combine all conversation text
-        full_text = self._combine_conversation_text(transcript)
+        # Parse conversation into structured data
+        conversation_data = self._parse_conversation(transcript)
         
-        # Extract different types of entities
-        truck_specs = self._extract_truck_specifications(full_text, transcript.turns)
-        locations = self._extract_locations(full_text)
-        commercial_terms = self._extract_commercial_terms(full_text, transcript.turns)
-        availability = self._extract_availability(full_text)
-        contact_info = self._extract_contact_info(full_text)
+        # Extract deterministic entities
+        deterministic_entities = self._extract_deterministic_entities(conversation_data)
         
-        # Calculate confidence scores
-        confidence_scores = self._calculate_confidence_scores(
-            truck_specs, locations, commercial_terms, availability, contact_info
-        )
+        # Extract conversational entities
+        conversational_entities = self._extract_conversational_entities(conversation_data)
         
-        # Build ExtractedEntities object
-        entities = ExtractedEntities(
-            truck_type=truck_specs.get('type'),
-            truck_length=truck_specs.get('length'),
-            tonnage=truck_specs.get('tonnage'),
-            current_location=locations.get('current'),
-            preferred_routes=locations.get('routes', []),
-            expected_rate=commercial_terms.get('rate'),
-            rate_flexibility=commercial_terms.get('flexibility'),
-            available_immediately=availability.get('immediate', True),
-            availability_constraints=availability.get('constraints', []),
-            phone_number=contact_info.get('phone'),
-            special_requirements=truck_specs.get('special_requirements', []),
-            confidence_scores=confidence_scores if confidence_scores is not None else {}
-        )
+        # Combine and create ExtractedEntities object
+        entities = self._build_entities_object(deterministic_entities, conversational_entities)
         
-        self.logger.info(f"Extracted entities with overall confidence: {confidence_scores.get('overall', 0)}")
+        # Apply knowledge base normalization
+        entities = self._apply_knowledge_normalization(entities, conversation_data['full_text'])
+        
         return entities
     
-    def _combine_conversation_text(self, transcript: Transcript) -> str:
-        """Combine all conversation turns into single text"""
-        return " ".join([turn.text for turn in transcript.turns])
+    def _parse_conversation(self, transcript: Transcript) -> Dict:
+        """Parse conversation into structured format for analysis"""
+        conversation_data = {
+            'turns': [],
+            'full_text': '',
+            'fo_turns': [],
+            'shipper_turns': [],
+            'ti_turns': []
+        }
+        
+        # Combine all conversation text
+        full_text_parts = []
+        
+        for turn in transcript.turns:
+            speaker = turn.speaker.lower()
+            text = turn.text
+            
+            turn_data = {
+                'speaker': speaker,
+                'text': text,
+                'speaker_type': self._identify_speaker_type(speaker, text)
+            }
+            
+            conversation_data['turns'].append(turn_data)
+            full_text_parts.append(f"{speaker}: {text}")
+            
+            # Categorize by speaker type
+            if turn_data['speaker_type'] == 'fo':
+                conversation_data['fo_turns'].append(turn_data)
+            elif turn_data['speaker_type'] == 'shipper':
+                conversation_data['shipper_turns'].append(turn_data)
+            elif turn_data['speaker_type'] == 'ti':
+                conversation_data['ti_turns'].append(turn_data)
+        
+        conversation_data['full_text'] = '\n'.join(full_text_parts)
+        return conversation_data
     
-    def _extract_truck_specifications(self, text: str, turns: List) -> Dict:
-        """Extract truck type, length, tonnage, and special requirements"""
-        truck_specs = {}
+    def _identify_speaker_type(self, speaker: str, text: str) -> str:
+        """Identify if speaker is FO, Shipper, or TI based on context"""
+        speaker_lower = speaker.lower()
+        text_lower = text.lower()
         
-        # Extract truck type using fuzzy matching
-        truck_type = self._fuzzy_match_truck_type(text)
+        # Check explicit indicators
+        if any(indicator in speaker_lower for indicator in self.fo_indicators):
+            return 'fo'
+        if any(indicator in speaker_lower for indicator in self.shipper_indicators):
+            return 'shipper'
+        if any(indicator in speaker_lower for indicator in self.ti_indicators):
+            return 'ti'
+        
+        # Special case: if speaker is "trucker", classify as FO
+        if 'trucker' in speaker_lower:
+            return 'fo'
+        
+        # Special case: if speaker is "shipper", classify as shipper/ti
+        if 'shipper' in speaker_lower:
+            return 'ti'  # Treating shipper as TI for conversation analysis
+        
+        # Infer from content patterns
+        if any(phrase in text_lower for phrase in ['my truck', 'our vehicle', 'we have truck']):
+            return 'fo'
+        if any(phrase in text_lower for phrase in ['load available', 'we have load', 'rate is']):
+            return 'ti'
+        if any(phrase in text_lower for phrase in ['need truck', 'want vehicle', 'cargo to move']):
+            return 'shipper'
+        
+        # Default: if we can't identify, assume it's part of the conversation
+        return 'unknown'
+    
+    def _extract_deterministic_entities(self, conversation_data: Dict) -> Dict:
+        """Extract deterministic entities: locations, truck specs, prices, numbers"""
+        entities = {
+            'fo_from_location': None,
+            'fo_to_location': None,
+            'fo_truck_type': None,
+            'fo_tonnage': None,
+            'fo_truck_length': None,
+            'shipper_quoted_price': None,
+            'fo_quoted_price': None,
+            'fo_shared_number': None
+        }
+        
+        # Extract from FO turns
+        fo_text = ' '.join([turn['text'] for turn in conversation_data['fo_turns']])
+        if fo_text:
+            entities.update(self._extract_from_fo_speech(fo_text))
+        
+        # Extract from Shipper/TI turns
+        shipper_text = ' '.join([turn['text'] for turn in conversation_data['shipper_turns'] + conversation_data['ti_turns']])
+        if shipper_text:
+            entities.update(self._extract_from_shipper_speech(shipper_text))
+        
+        # Extract phone numbers from entire conversation
+        entities['fo_shared_number'] = self._extract_phone_numbers(conversation_data['full_text'])
+        
+        return entities
+    
+    def _extract_from_fo_speech(self, fo_text: str) -> Dict:
+        """Extract entities specifically from FO speech"""
+        entities = {}
+        
+        # Extract truck specifications
+        truck_type = self._fuzzy_match_truck_type(fo_text)
         if truck_type:
-            truck_specs['type'] = truck_type
-        
-        # Extract length
-        length_match = self.truck_length_pattern.search(text)
-        if length_match:
-            truck_specs['length'] = int(length_match.group(1))
+            entities['fo_truck_type'] = truck_type
         
         # Extract tonnage
-        tonnage_match = self.tonnage_pattern.search(text)
+        tonnage_match = self.tonnage_pattern.search(fo_text)
         if tonnage_match:
-            tonnage_str = tonnage_match.group(1).replace(',', '')
-            truck_specs['tonnage'] = float(tonnage_str)
+            entities['fo_tonnage'] = float(tonnage_match.group(1))
         
-        # Extract special requirements
-        special_reqs = []
-        if 'tarpaulin' in text.lower() or 'tarp' in text.lower():
-            special_reqs.append('tarpaulin_required')
-        if 'expenses' in text.lower():
-            special_reqs.append('expenses_included')
+        # Extract length
+        length_match = self.truck_length_pattern.search(fo_text)
+        if length_match:
+            entities['fo_truck_length'] = int(length_match.group(1))
         
-        truck_specs['special_requirements'] = special_reqs
+        # Extract FO quoted price/rate expectations
+        price_match = self.price_pattern.search(fo_text)
+        if price_match:
+            entities['fo_quoted_price'] = float(price_match.group(1).replace(',', ''))
         
-        return truck_specs
+        # Extract locations using enhanced pattern matching
+        locations = self._extract_locations_enhanced(fo_text)
+        if locations.get('from'):
+            entities['fo_from_location'] = locations['from']
+        if locations.get('to'):
+            entities['fo_to_location'] = locations['to']
+        
+        return entities
     
-    def _fuzzy_match_truck_type(self, text: str) -> Optional[TruckType]:
-        """Use fuzzy matching to identify truck type from text"""
-        text_lower = text.lower()
-        best_match = None
-        best_score = 0
+    def _extract_from_shipper_speech(self, shipper_text: str) -> Dict:
+        """Extract entities from Shipper/TI speech"""
+        entities = {}
         
-        for truck_type, variations in self.truck_type_vocab.items():
-            for variation in variations:
-                # Check if variation appears in text
-                if variation in text_lower:
-                    return TruckType(truck_type.replace('_', '_'))
-                
-                # Fuzzy match
-                score = fuzz.partial_ratio(variation, text_lower)
-                if score > 80 and score > best_score:  # Threshold for fuzzy match
-                    best_score = score
-                    best_match = truck_type
+        # Extract shipper quoted price
+        price_matches = list(self.price_pattern.finditer(shipper_text))
+        quote_matches = list(self.quoted_price_pattern.finditer(shipper_text))
         
-        return TruckType(best_match.replace('_', '_')) if best_match else None
+        if price_matches or quote_matches:
+            # Take the first clear price mention
+            all_matches = price_matches + quote_matches
+            if all_matches:
+                price_str = all_matches[0].group(1).replace(',', '')
+                entities['shipper_quoted_price'] = float(price_str)
+        
+        return entities
     
-    def _extract_locations(self, text: str) -> Dict:
-        """Extract current location and preferred routes"""
-        locations = {'routes': []}
+    def _extract_phone_numbers(self, full_text: str) -> Optional[str]:
+        """Enhanced phone number extraction including fragmented numbers"""
+        # Try standard phone pattern first
+        phone_matches = self.phone_pattern.findall(full_text)
+        if phone_matches:
+            return phone_matches[0]
         
-        # Find all potential locations using fuzzy matching
-        found_locations = []
-        text_lower = text.lower()
+        # Try fragmented phone pattern (like "98... 9867... 33... 74... 13")
+        fragmented_match = self.fragmented_phone_pattern.search(full_text)
+        if fragmented_match:
+            # Reconstruct the number from fragments
+            fragments = fragmented_match.groups()
+            reconstructed = ''.join(fragments)
+            # Validate it looks like a phone number
+            if len(reconstructed) >= 10 and reconstructed[0] in '6789':
+                return reconstructed
         
-        for standard_location, variations in self.location_vocab.items():
-            for variation in variations:
-                if variation in text_lower:
-                    found_locations.append(standard_location)
-                    break
+        # Try to find number sequences and reconstruct
+        # Look for patterns like "98 9867 33 74 13" or similar
+        number_sequences = self.number_sequence_pattern.findall(full_text)
+        if len(number_sequences) >= 3:
+            # Try to reconstruct phone number from sequences
+            potential_number = ''.join(number_sequences[:5])  # Take first 5 sequences
+            if len(potential_number) >= 10 and potential_number[0] in '6789':
+                return potential_number
         
-        # Also find PIN codes and try to map them
-        pincode_matches = self.pincode_pattern.findall(text)
+        return None
+    
+    def _extract_locations_enhanced(self, text: str) -> Dict:
+        """Enhanced location extraction with directional context"""
+        locations = {'from': None, 'to': None}
         
-        # Simple heuristic: first location mentioned might be current location
-        if found_locations:
-            locations['current'] = found_locations[0]
-            locations['routes'] = found_locations
+        # Look for "from X to Y" patterns
+        from_to_pattern = re.compile(r'from\s+([A-Za-z\s]+?)\s+to\s+([A-Za-z\s]+?)(?:\s|$|[,.])', re.IGNORECASE)
+        from_to_match = from_to_pattern.search(text)
+        
+        if from_to_match:
+            from_loc = from_to_match.group(1).strip()
+            to_loc = from_to_match.group(2).strip()
+            
+            # Normalize using vocabulary
+            locations['from'] = self._normalize_location(from_loc)
+            locations['to'] = self._normalize_location(to_loc)
+        else:
+            # Look for individual location mentions with context
+            location_matches = self.location_pattern.findall(text)
+            normalized_locations = [self._normalize_location(loc) for loc in location_matches if loc.strip()]
+            
+            if len(normalized_locations) >= 2:
+                locations['from'] = normalized_locations[0]
+                locations['to'] = normalized_locations[1]
+            elif len(normalized_locations) == 1:
+                # Determine if it's from or to based on context
+                if 'from' in text.lower():
+                    locations['from'] = normalized_locations[0]
+                elif 'to' in text.lower():
+                    locations['to'] = normalized_locations[0]
         
         return locations
     
-    def _extract_commercial_terms(self, text: str, turns: List) -> Dict:
-        """Extract pricing and commercial terms"""
-        commercial = {}
+    def _normalize_location(self, location: str) -> str:
+        """Normalize location using knowledge base"""
+        location_clean = location.lower().strip()
         
-        # Extract price/rate
-        price_match = self.price_pattern.search(text)
-        if price_match:
-            price_str = price_match.group(1).replace(',', '')
-            commercial['rate'] = float(price_str)
+        for standard_location, variations in self.location_vocab.items():
+            if location_clean in variations or any(var in location_clean for var in variations):
+                return standard_location.title()
         
-        # Determine rate flexibility based on conversation tone
-        if any(word in text.lower() for word in ['negotiate', 'discuss', 'ask', 'tell rate']):
-            commercial['flexibility'] = 'negotiable'
-        elif any(word in text.lower() for word in ['fixed', 'confirmed', 'final']):
-            commercial['flexibility'] = 'fixed'
-        else:
-            commercial['flexibility'] = 'unknown'
-        
-        return commercial
+        return location.strip().title()
     
-    def _extract_availability(self, text: str) -> Dict:
-        """Extract availability and timing constraints"""
-        availability = {}
-        constraints = []
+    def _extract_conversational_entities(self, conversation_data: Dict) -> Dict:
+        """Extract conversational intent entities"""
+        entities = {
+            'did_ti_pitch_load': False,
+            'was_price_discussed': False,
+            'did_ti_say_no_load': False,
+            'was_number_exchanged': False
+        }
         
+        full_text = conversation_data['full_text'].lower()
+        
+        # Check if TI pitched any load
+        for pattern in self.load_pitch_patterns:
+            if re.search(pattern, full_text, re.IGNORECASE):
+                entities['did_ti_pitch_load'] = True
+                break
+        
+        # Additional load pitch detection
+        if any(phrase in full_text for phrase in ['load for gujarat', 'load of yours', 'load available']):
+            entities['did_ti_pitch_load'] = True
+        
+        # Check if price was discussed
+        for pattern in self.price_discussion_patterns:
+            if re.search(pattern, full_text, re.IGNORECASE):
+                entities['was_price_discussed'] = True
+                break
+        
+        # Also check if any price numbers were mentioned or capacity discussed
+        if (self.price_pattern.search(full_text) or 'rate' in full_text or 
+            'capacity' in full_text or 'ton' in full_text):
+            entities['was_price_discussed'] = True
+        
+        # Check if TI said no load available
+        for pattern in self.no_load_patterns:
+            if re.search(pattern, full_text, re.IGNORECASE):
+                entities['did_ti_say_no_load'] = True
+                break
+        
+        # Check if number was exchanged - Enhanced detection
+        number_exchange_indicators = [
+            'mobile number', 'phone number', 'your number', 'tell me your number',
+            'give me your number', 'share your number'
+        ]
+        
+        # Check for explicit number exchange conversation
+        for indicator in number_exchange_indicators:
+            if indicator in full_text:
+                entities['was_number_exchanged'] = True
+                break
+        
+        # Also check if we can actually find any numbers in the text
+        if (re.search(r'\d{10}', full_text.replace(' ', '').replace('.', '').replace('-', '')) or
+            self.fragmented_phone_pattern.search(full_text) or
+            re.search(r'\d{2,3}\.{2,}\d{3,4}\.{2,}\d{2,3}\.{2,}\d{2,3}\.{2,}\d{2,3}', full_text)):
+            entities['was_number_exchanged'] = True
+        
+        return entities
+    
+    def _fuzzy_match_truck_type(self, text: str) -> Optional[TruckType]:
+        """Enhanced truck type matching with knowledge base"""
         text_lower = text.lower()
         
-        # Check for immediate availability
-        if any(word in text_lower for word in ['immediately', 'now', 'today', 'same day']):
-            availability['immediate'] = True
-        else:
-            availability['immediate'] = False
+        for truck_type, variations in self.truck_type_vocab.items():
+            for variation in variations:
+                if variation in text_lower:
+                    return getattr(TruckType, truck_type.upper())
+                
+                # Fuzzy match with threshold
+                score = fuzz.partial_ratio(variation, text_lower)
+                if score > 85:
+                    return getattr(TruckType, truck_type.upper())
         
-        # Check for day constraints
-        if 'sunday' in text_lower and 'not' in text_lower:
-            constraints.append('no_sunday_unloading')
-        
-        if 'monday' in text_lower:
-            constraints.append('monday_delivery')
-        
-        availability['constraints'] = constraints
-        return availability
+        return None
     
-    def _extract_contact_info(self, text: str) -> Dict:
-        """Extract phone numbers and contact information"""
-        contact = {}
+    def _build_entities_object(self, deterministic: Dict, conversational: Dict) -> ExtractedEntities:
+        """Build ExtractedEntities object from extracted data"""
+        confidence_scores = {}
         
-        phone_matches = self.phone_pattern.findall(text)
-        if phone_matches:
-            # Take the longest/most complete number
-            contact['phone'] = max(phone_matches, key=len)
+        # Calculate confidence scores
+        for key, value in deterministic.items():
+            if value is not None:
+                confidence_scores[key] = 0.9
         
-        return contact
+        for key, value in conversational.items():
+            confidence_scores[key] = 0.8
+        
+        # Calculate overall confidence
+        if confidence_scores:
+            confidence_scores['overall'] = sum(confidence_scores.values()) / len(confidence_scores)
+        
+        # Create entity object with ALL fields explicitly set
+        entities = ExtractedEntities(
+            # Original fields
+            truck_type=deterministic.get('fo_truck_type'),
+            truck_length=deterministic.get('fo_truck_length'),
+            tonnage=deterministic.get('fo_tonnage'),
+            current_location=deterministic.get('fo_from_location'),
+            preferred_routes=[loc for loc in [deterministic.get('fo_from_location'), 
+                                            deterministic.get('fo_to_location')] if loc],
+            expected_rate=deterministic.get('fo_quoted_price'),
+            phone_number=deterministic.get('fo_shared_number'),
+            available_immediately=True,
+            confidence_scores=confidence_scores,
+            
+            # Enhanced deterministic fields
+            fo_from_location=deterministic.get('fo_from_location'),
+            fo_to_location=deterministic.get('fo_to_location'),
+            fo_truck_type=deterministic.get('fo_truck_type'),
+            fo_tonnage=deterministic.get('fo_tonnage'),
+            fo_truck_length=deterministic.get('fo_truck_length'),
+            shipper_quoted_price=deterministic.get('shipper_quoted_price'),
+            fo_quoted_price=deterministic.get('fo_quoted_price'),
+            fo_shared_number=deterministic.get('fo_shared_number'),
+            
+            # Enhanced conversational fields
+            did_ti_pitch_load=conversational.get('did_ti_pitch_load', False),
+            was_price_discussed=conversational.get('was_price_discussed', False),
+            did_ti_say_no_load=conversational.get('did_ti_say_no_load', False),
+            was_number_exchanged=conversational.get('was_number_exchanged', False),
+            
+            # Backup in special_requirements
+            special_requirements=[
+                f"fo_shared_number:{deterministic.get('fo_shared_number')}",
+                f"shipper_quoted_price:{deterministic.get('shipper_quoted_price')}",
+                f"did_ti_pitch_load:{conversational.get('did_ti_pitch_load')}",
+                f"was_price_discussed:{conversational.get('was_price_discussed')}",
+                f"did_ti_say_no_load:{conversational.get('did_ti_say_no_load')}",
+                f"was_number_exchanged:{conversational.get('was_number_exchanged')}"
+            ]
+        )
+        print(f"DEBUG: Setting fo_shared_number to: {deterministic.get('fo_shared_number')}")
+        print(f"DEBUG: Setting was_number_exchanged to: {conversational.get('was_number_exchanged')}")
+        return entities
     
-    def _calculate_confidence_scores(self, truck_specs: Dict, locations: Dict, 
-                                   commercial: Dict, availability: Dict, 
-                                   contact: Dict) -> Dict[str, float]:
-        """Calculate confidence scores for extracted entities"""
-        scores = {}
-        
-        # Individual entity confidence scores
-        scores['truck_type'] = 0.9 if truck_specs.get('type') else 0.0
-        scores['truck_length'] = 0.95 if truck_specs.get('length') else 0.0
-        scores['tonnage'] = 0.95 if truck_specs.get('tonnage') else 0.0
-        scores['location'] = 0.8 if locations.get('current') else 0.3
-        scores['rate'] = 0.9 if commercial.get('rate') else 0.0
-        scores['phone'] = 0.95 if contact.get('phone') else 0.0
-        scores['availability'] = 0.7  # Always some indication from conversation
-        
-        # Overall confidence (weighted average of critical entities)
-        critical_entities = ['truck_type', 'tonnage', 'location']
-        critical_scores = [scores.get(entity, 0) for entity in critical_entities]
-        scores['overall'] = sum(critical_scores) / len(critical_scores) if critical_scores else 0.0
-        
-        return scores
-
-    def extract_entities_with_knowledge(self, transcript):
-        """Enhanced extraction using knowledge base context"""
-        
-        # Combine transcript text for analysis
-        full_text = self._combine_transcript_text(transcript)
-        
-        # Get comprehensive knowledge context
-        knowledge_context = trucking_knowledge.get_knowledge_context()
-        
-        # Get original entities using your existing method
-        entities = self.extract_entities(transcript)
-        
-        # Apply knowledge base normalization using correct field names
-        
-        # 1. Normalize truck_type using aliases - IMPROVED VERSION
-        if full_text:  # Check the full text regardless of current extraction
-            # Check if any container aliases appear in text
-            for standard_type, data in knowledge_context['truck_classifications'].items():
-                aliases = data.get('aliases', [])
-                
-                # Check if any alias matches text
-                for alias in aliases:
-                    if alias.lower() in full_text.lower():
-                        # Override the truck type if we find a match
-                        if standard_type == 'container':
-                            entities.truck_type = TruckType.CONTAINER
+    def _apply_knowledge_normalization(self, entities: ExtractedEntities, full_text: str) -> ExtractedEntities:
+        """Apply knowledge base normalization"""
+        if hasattr(trucking_knowledge, 'get_knowledge_context'):
+            knowledge_context = trucking_knowledge.get_knowledge_context()
+            
+            # Normalize truck type using knowledge base
+            if full_text:
+                for standard_type, data in knowledge_context['truck_classifications'].items():
+                    aliases = data.get('aliases', [])
+                    for alias in aliases:
+                        if alias.lower() in full_text.lower():
+                            if standard_type == 'container':
+                                entities.truck_type = TruckType.CONTAINER
+                            elif standard_type == 'open':
+                                entities.truck_type = TruckType.OPEN
                             break
-                        elif standard_type == 'trailer':
-                            entities.truck_type = TruckType.MULTI_AXLE
-                            break
-                
-                # Break out of outer loop if we found a match
-                if standard_type == 'container' and entities.truck_type == TruckType.CONTAINER:
-                    break
-                elif standard_type == 'trailer' and entities.truck_type == TruckType.MULTI_AXLE:
-                    break
-                
-        # 2. Normalize current_location
-        if entities.current_location:
-            entities.current_location = trucking_knowledge.normalize_location(entities.current_location)
-        
-        # 3. Normalize preferred_routes
-        if entities.preferred_routes:
-            normalized_routes = []
-            for route in entities.preferred_routes:
-                normalized_routes.append(trucking_knowledge.normalize_location(route))
-            entities.preferred_routes = normalized_routes
-        
-        # 4. Update confidence scores to reflect knowledge base enhancement
-        if entities.confidence_scores:
-            if entities.truck_type:
-                entities.confidence_scores['truck_type_enhanced'] = 0.95
+            
+            # Normalize locations
             if entities.current_location:
-                entities.confidence_scores['location_enhanced'] = 0.90
-                    
-            # Recalculate overall confidence
-            enhanced_scores = [score for key, score in entities.confidence_scores.items() 
-                            if not key.endswith('_enhanced')]
-            if enhanced_scores:
-                entities.confidence_scores['overall'] = sum(enhanced_scores) / len(enhanced_scores)
-                
-                return entities  # This was missing!
-    def _combine_transcript_text(self, transcript):
-        """Combine all conversation turns into single text"""
-        combined_text = []
+                entities.current_location = trucking_knowledge.normalize_location(entities.current_location)
+            
+            if entities.preferred_routes:
+                normalized_routes = []
+                for route in entities.preferred_routes:
+                    normalized_routes.append(trucking_knowledge.normalize_location(route))
+                entities.preferred_routes = normalized_routes
         
-        # Handle different transcript formats
-        if hasattr(transcript, 'turns') and transcript.turns:
-            # Pydantic model format
-            for turn in transcript.turns:
-                combined_text.append(f"{turn.speaker}: {turn.text}")
-        elif hasattr(transcript, 'conversation') and transcript.conversation:
-            # Dictionary format
-            for turn in transcript.conversation:
-                speaker = turn.get('speaker', 'Unknown')
-                text = turn.get('text', '')
-                combined_text.append(f"{speaker}: {text}")
-        else:
-            # Fallback - try to extract text however possible
-            combined_text.append(str(transcript))
-        
-        return "\n".join(combined_text)
-        return entities     
-        return scores
+        return entities
