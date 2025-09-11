@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""
+Main orchestrator for the Trucking Load Matching System
+"""
+
+import time
+from typing import List, Optional
+from datetime import datetime
+
+# Import your existing components
+from agents.entity_extraction_agent import EntityExtractionAgent
+from agents.load_matching_agent import LoadMatchingAgent
+from models.transcript_model import Transcript
+from models.load_model import Load
+from models.entities_model import ExtractedEntities
+
+
+class MatchResult:
+    """Result of the load matching process"""
+    
+    def __init__(self, extracted_entities: ExtractedEntities, load_matches: List, 
+                 business_recommendation: str, reasoning: str = ""):
+        self.extracted_entities = extracted_entities
+        self.load_matches = load_matches
+        self.business_recommendation = business_recommendation
+        self.reasoning = reasoning
+        self.timestamp = time.time()
+
+
+class TruckingLoadMatcher:
+    """
+    Main orchestrator class for the trucking load matching system
+    """
+    
+    def __init__(self):
+        """Initialize the matcher with required agents"""
+        self.entity_agent = EntityExtractionAgent()
+        self.load_agent = LoadMatchingAgent()
+        self.processing_history = []
+        
+    def process_transcript(self, transcript: Transcript, available_loads: List[Load]) -> MatchResult:
+        """
+        Process a transcript and match with available loads
+        """
+        
+        try:
+            # Step 1: Extract entities from transcript
+            print(f"🔍 Extracting entities from transcript...")
+            extracted_entities = self.entity_agent.extract_entities(transcript.conversation_text)
+            
+            if not extracted_entities:
+                return MatchResult(
+                    extracted_entities=ExtractedEntities(),
+                    load_matches=[],
+                    business_recommendation="reject",
+                    reasoning="Could not extract any meaningful entities from transcript"
+                )
+            
+            # Step 2: Match with available loads
+            print(f"🎯 Matching with {len(available_loads)} available loads...")
+            load_matches = self.load_agent.match_loads(extracted_entities, available_loads)
+            
+            # Step 3: Determine business recommendation
+            business_recommendation, reasoning = self._determine_business_action(
+                extracted_entities, load_matches
+            )
+            
+            # Step 4: Create and store result
+            result = MatchResult(
+                extracted_entities=extracted_entities,
+                load_matches=load_matches,
+                business_recommendation=business_recommendation,
+                reasoning=reasoning
+            )
+            
+            print(f"✅ Processing completed: {business_recommendation}")
+            return result
+            
+        except Exception as e:
+            print(f"❌ Error processing transcript: {e}")
+            return MatchResult(
+                extracted_entities=ExtractedEntities(),
+                load_matches=[],
+                business_recommendation="reject",
+                reasoning=f"Processing error: {str(e)}"
+            )
+    
+    def _determine_business_action(self, entities: ExtractedEntities, matches: List) -> tuple:
+        """Determine the business action based on extracted entities and matches"""
+        
+        if not matches:
+            if entities.overall_confidence < 0.5:
+                return "reject", "Low confidence in entity extraction and no matches found"
+            else:
+                return "create_lead", "Good entity extraction but no current matches - create lead for future"
+        
+        # Check best match score
+        best_match = max(matches, key=lambda x: x.match_score)
+        
+        if best_match.match_score >= 0.8:
+            return "auto_approve", f"High confidence match found ({best_match.match_score:.1%})"
+        elif best_match.match_score >= 0.6:
+            return "human_review", f"Good match found ({best_match.match_score:.1%}) but requires human review"
+        elif best_match.match_score >= 0.4:
+            return "create_lead", f"Moderate match ({best_match.match_score:.1%}) - create lead for follow-up"
+        else:
+            return "reject", f"Low match scores (best: {best_match.match_score:.1%})"
+
+
+def main():
+    """Main function for testing the system"""
+    
+    print("🚛 Trucking Load Matcher - Testing")
+    print("=" * 50)
+    
+    # First, let's check what fields the Load model actually expects
+    print("📋 Checking Load model structure...")
+    
+    try:
+        # Try a simple load creation to see what's required
+        test_load = Load(
+            id="TEST",
+            booking_office="Test Office",
+            message_id="MSG_TEST",
+            timestamp=time.time(),
+            from_location="TestFrom",
+            to_location="TestTo",
+            truck_type="Container",
+            tonnage="20",
+            product="Test Product",
+            rate=25000,
+            contact="9999999999",
+            eta="1 day"
+        )
+        print("✅ Load model structure confirmed")
+        
+        # Initialize the matcher
+        matcher = TruckingLoadMatcher()
+        
+        # Simple test transcript
+        test_transcript = Transcript(
+            conversation_text="I have a 25 feet open vehicle. Looking for loads to Tamil Nadu."
+        )
+        
+        # Test with the confirmed load structure
+        sample_loads = [test_load]
+        
+        # Process the transcript
+        result = matcher.process_transcript(test_transcript, sample_loads)
+        
+        print(f"✅ System test completed successfully!")
+        print(f"   Business Recommendation: {result.business_recommendation}")
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        print(f"   Error type: {type(e).__name__}")
+        
+        # Let's try to understand what the Load model actually expects
+        print("\n🔍 Let's check the actual Load model...")
+        try:
+            from models.load_model import Load
+            print("Load model imported successfully")
+            print("Check models/load_model.py to see the exact field requirements")
+        except Exception as import_error:
+            print(f"Import error: {import_error}")
+
+
+if __name__ == "__main__":
+    main()
